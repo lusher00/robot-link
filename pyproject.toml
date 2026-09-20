@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robot-link"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[project.scripts]
+robot-linkd = "robot_link.daemon:main"
+robot-link-bone-server = "robot_link.bone_server:main"
+
+[tool.setuptools]
+packages = ["robot_link"]
+
