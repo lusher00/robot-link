@@ -1,0 +1,15 @@
+[Unit]
+Description=Robot Link BeagleBone service
+After=network.target batt_monitor.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/robot-link-bone
+RuntimeDirectory=robot-link
+ExecStart=/usr/local/bin/robot-link-boned
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+
