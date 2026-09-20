@@ -10,7 +10,7 @@ Restart=always
 RestartSec=1
 # Root is intentional because this service must power off the Pi.
 User=root
+RuntimeDirectory=robot-link
 
 [Install]
 WantedBy=multi-user.target
-

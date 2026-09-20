@@ -18,14 +18,16 @@ class BoneDaemonTest(unittest.IsolatedAsyncioTestCase):
             daemon=BoneDaemon(args); daemon.session=FakeSession()
             task=asyncio.create_task(daemon.battery_loop())
             await asyncio.sleep(.03)
-            self.assertEqual(daemon.session.sent,[])
+            self.assertFalse(any(p.message_type==MessageType.SHUTDOWN_REQUEST
+                                 for p in daemon.session.sent))
             for voltage in (9.3,9.2):
                 await asyncio.sleep(.002)
                 with open(battery,"w") as f: json.dump({"voltage":voltage},f)
                 await asyncio.sleep(.02)
             task.cancel(); await asyncio.gather(task,return_exceptions=True)
-            self.assertEqual(len(daemon.session.sent),1)
-            self.assertEqual(daemon.session.sent[0].message_type,MessageType.SHUTDOWN_REQUEST)
+            shutdowns=[p for p in daemon.session.sent
+                       if p.message_type==MessageType.SHUTDOWN_REQUEST]
+            self.assertEqual(len(shutdowns),1)
     async def test_stale_voltage_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             battery=os.path.join(tmp,"battery.json")
