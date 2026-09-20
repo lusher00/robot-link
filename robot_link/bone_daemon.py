@@ -18,6 +18,7 @@ class BoneDaemon:
         if self.session:
             LOG.warning("rejecting second Pi connection"); writer.close(); await writer.wait_closed(); return
         session=Session(reader,writer,1,self.received); self.session=session; self.shutdown_sent=False
+        self.last_battery_sample=None
         LOG.info("Pi connected from %s",writer.get_extra_info("peername"))
         try: await session.run()
         except Exception as exc: LOG.warning("Pi session ended: %s",exc)
@@ -48,6 +49,15 @@ class BoneDaemon:
             sample_id,voltage=sample
             if sample_id==self.last_battery_sample: continue
             self.last_battery_sample=sample_id
+            if self.session and self.session.ready:
+                try:
+                    await self.session.send(Packet(
+                        MessageType.BATTERY_STATUS,
+                        json.dumps({"voltage":voltage,"sample_ns":sample_id},
+                                   separators=(",",":")).encode(),
+                        Flags.EVENT))
+                except (ConnectionError, OSError):
+                    LOG.debug("battery update dropped while Pi disconnected")
             if voltage>self.args.shutdown_voltage+self.args.hysteresis:
                 self.low_samples=0; continue
             if voltage<=self.args.shutdown_voltage: self.low_samples+=1
