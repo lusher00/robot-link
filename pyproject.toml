@@ -10,7 +10,8 @@ requires-python = ">=3.10"
 [project.scripts]
 robot-linkd = "robot_link.daemon:main"
 robot-link-bone-server = "robot_link.bone_server:main"
+robot-link-boned = "robot_link.bone_daemon:main"
+robot-linkctl = "robot_link.bone_ctl:main"
 
 [tool.setuptools]
 packages = ["robot_link"]
-
