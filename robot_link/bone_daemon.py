@@ -8,6 +8,7 @@ LOG=logging.getLogger("robot-link-boned")
 class BoneDaemon:
     def __init__(self,args):
         self.args=args; self.session=None; self.sequence=1; self.low_samples=0; self.shutdown_sent=False
+        self.last_battery_sample=None
     def next_sequence(self):
         n=self.sequence; self.sequence=1 if n==0xffff else n+1; return n
     async def received(self,packet,session):
@@ -26,19 +27,28 @@ class BoneDaemon:
         flags=Flags.ACK_REQUIRED|(Flags.HIGH_PRIORITY if priority else Flags(0))
         seq=self.next_sequence(); await self.session.send(Packet(msg_type,json.dumps(data,separators=(",",":")).encode(),flags,seq))
         return seq
-    def read_voltage(self):
+    def read_battery_sample(self):
         path=Path(self.args.battery_file)
         if not path.is_file() or time.time()-path.stat().st_mtime>self.args.battery_max_age: return None
         data=json.loads(path.read_text())
         for key in ("voltage","voltage_v","v","batt_voltage"):
-            if key in data: return float(data[key])
+            if key in data: return path.stat().st_mtime_ns,float(data[key])
         return None
+    def read_voltage(self):
+        sample=self.read_battery_sample()
+        return None if sample is None else sample[1]
     async def battery_loop(self):
         while True:
             await asyncio.sleep(self.args.battery_interval)
-            try: voltage=self.read_voltage()
+            try: sample=self.read_battery_sample()
             except Exception as exc: LOG.warning("battery status unreadable: %s",exc); voltage=None
-            if voltage is None or voltage>self.args.shutdown_voltage+self.args.hysteresis:
+            else: voltage=None if sample is None else sample[1]
+            if sample is None:
+                self.low_samples=0; continue
+            sample_id,voltage=sample
+            if sample_id==self.last_battery_sample: continue
+            self.last_battery_sample=sample_id
+            if voltage>self.args.shutdown_voltage+self.args.hysteresis:
                 self.low_samples=0; continue
             if voltage<=self.args.shutdown_voltage: self.low_samples+=1
             if self.low_samples>=self.args.low_samples and not self.shutdown_sent:
@@ -83,10 +93,9 @@ def main():
     p.add_argument("--hysteresis",type=float,default=float(os.getenv("ROBOT_LINK_BATTERY_HYSTERESIS","0.4")))
     p.add_argument("--low-samples",type=int,default=int(os.getenv("ROBOT_LINK_LOW_SAMPLES","5")))
     p.add_argument("--battery-interval",type=float,default=float(os.getenv("ROBOT_LINK_BATTERY_INTERVAL","1")))
-    p.add_argument("--battery-max-age",type=float,default=float(os.getenv("ROBOT_LINK_BATTERY_MAX_AGE","5")))
+    p.add_argument("--battery-max-age",type=float,default=float(os.getenv("ROBOT_LINK_BATTERY_MAX_AGE","120")))
     p.add_argument("--pi-shutdown-delay",type=float,default=float(os.getenv("ROBOT_LINK_PI_SHUTDOWN_DELAY","5")))
     p.add_argument("-v","--verbose",action="store_true"); args=p.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
     asyncio.run(BoneDaemon(args).run())
 if __name__=="__main__": main()
-
