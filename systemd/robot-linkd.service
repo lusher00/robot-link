@@ -1,0 +1,16 @@
+[Unit]
+Description=Robot Link Raspberry Pi service
+After=network.target sound.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/robot-link
+ExecStart=/usr/local/bin/robot-linkd
+Restart=always
+RestartSec=1
+# Root is intentional because this service must power off the Pi.
+User=root
+
+[Install]
+WantedBy=multi-user.target
+
