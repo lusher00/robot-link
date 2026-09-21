@@ -91,14 +91,27 @@ class BoneDaemon:
                 except Exception as exc: response={"ok":False,"error":str(exc)}
                 writer.write(json.dumps(response).encode()+b"\n"); await writer.drain()
         finally: writer.close(); await writer.wait_closed()
+    async def bind_tcp(self):
+        # The listener binds to the USB gadget address only, so nothing on the
+        # Bone's Wi-Fi can connect. That address does not exist until usb0 is
+        # up, which can be after this service starts at boot. Wait for it here
+        # rather than exiting: a fast crash loop would hit systemd's start
+        # limit and leave the service failed.
+        warned=False
+        while True:
+            try: tcp=await asyncio.start_server(self.connected,self.args.listen,self.args.port)
+            except OSError as exc:
+                if not warned: LOG.warning("cannot listen on %s:%d yet (%s); retrying",self.args.listen,self.args.port,exc)
+                warned=True; await asyncio.sleep(1); continue
+            LOG.info("listening for Pi on %s:%d",self.args.listen,self.args.port)
+            return tcp
     async def run(self):
         with contextlib.suppress(FileNotFoundError): os.unlink(self.args.socket)
         os.makedirs(os.path.dirname(self.args.socket) or ".",exist_ok=True)
         local=await asyncio.start_unix_server(self.local_client,self.args.socket); os.chmod(self.args.socket,0o660)
-        tcp=await asyncio.start_server(self.connected,self.args.listen,self.args.port)
         battery=asyncio.create_task(self.battery_loop())
-        LOG.info("listening for Pi on %s:%d",self.args.listen,self.args.port)
         try:
+            tcp=await self.bind_tcp()
             async with local,tcp: await asyncio.gather(local.serve_forever(),tcp.serve_forever())
         finally:
             battery.cancel(); await asyncio.gather(battery,return_exceptions=True)
@@ -106,7 +119,7 @@ class BoneDaemon:
 
 def main():
     p=argparse.ArgumentParser(description="Robot Link BeagleBone service")
-    p.add_argument("--listen",default=os.getenv("ROBOT_LINK_LISTEN","0.0.0.0")); p.add_argument("--port",type=int,default=int(os.getenv("ROBOT_LINK_PORT","5555")))
+    p.add_argument("--listen",default=os.getenv("ROBOT_LINK_LISTEN","192.168.7.2")); p.add_argument("--port",type=int,default=int(os.getenv("ROBOT_LINK_PORT","5555")))
     p.add_argument("--socket",default=os.getenv("ROBOT_LINK_BONE_SOCKET","/run/robot-link/bone.sock"))
     p.add_argument("--battery-file",default=os.getenv("ROBOT_LINK_BATTERY_FILE","/run/batt_status.json"))
     p.add_argument("--battery-interval",type=float,default=float(os.getenv("ROBOT_LINK_BATTERY_INTERVAL","1")))

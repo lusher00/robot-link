@@ -1,4 +1,5 @@
 import asyncio, json, os, tempfile, time, unittest
+from unittest import mock
 from types import SimpleNamespace
 from robot_link.bone_daemon import BoneDaemon
 from robot_link.protocol import MessageType
@@ -66,3 +67,17 @@ class BoneDaemonTest(unittest.IsolatedAsyncioTestCase):
             task.cancel(); await asyncio.gather(task,return_exceptions=True)
             self.assertTrue(any(p.message_type==MessageType.SHUTDOWN_REQUEST
                                 for p in daemon.session.sent))
+    async def test_listener_waits_for_usb_address(self):
+        # usb0 may not have 192.168.7.2 yet when the service starts at boot.
+        # The daemon must keep retrying the bind rather than exit.
+        args=SimpleNamespace(listen="192.168.7.2",port=5555)
+        daemon=BoneDaemon(args); server=object()
+        attempts=[OSError(99,"Cannot assign requested address"),server]
+        async def fake_start_server(*a,**k):
+            result=attempts.pop(0)
+            if isinstance(result,Exception): raise result
+            return result
+        with mock.patch("asyncio.start_server",fake_start_server), \
+             mock.patch("asyncio.sleep",mock.AsyncMock()):
+            self.assertIs(await daemon.bind_tcp(),server)
+        self.assertEqual(attempts,[])

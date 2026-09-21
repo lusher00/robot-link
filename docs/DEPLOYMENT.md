@@ -41,14 +41,21 @@ sudo install -m 644 systemd/robot-link-bone.env.example \
   /etc/default/robot-link-bone
 ```
 
-Robot Link only needs the battery status path and forwarding timing:
+Robot Link only needs its listen address, the battery status path and
+forwarding timing:
 
 ```text
+ROBOT_LINK_LISTEN=192.168.7.2
 ROBOT_LINK_BATTERY_FILE=/run/batt_status.json
 ROBOT_LINK_BATTERY_INTERVAL=1
 ROBOT_LINK_BATTERY_MAX_AGE=120
 ROBOT_LINK_PI_SHUTDOWN_DELAY=5
 ```
+
+`ROBOT_LINK_LISTEN` must be the USB gadget address. `0.0.0.0` also accepts
+connections over the Bone's Wi-Fi, and any such client would occupy the single
+Pi slot. If `usb0` is not up yet at boot, the service logs one warning and
+waits for the address instead of exiting.
 
 `batt_monitor` owns calibration, thresholds, confirmation, long-term trend,
 and the Bone shutdown grace period. Its watch service publishes a unique
