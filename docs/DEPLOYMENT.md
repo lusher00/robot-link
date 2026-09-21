@@ -41,18 +41,19 @@ sudo install -m 644 systemd/robot-link-bone.env.example \
   /etc/default/robot-link-bone
 ```
 
-Important initial settings include:
+Robot Link only needs the battery status path and forwarding timing:
 
 ```text
 ROBOT_LINK_BATTERY_FILE=/run/batt_status.json
-ROBOT_LINK_SHUTDOWN_VOLTAGE=9.6
-ROBOT_LINK_BATTERY_HYSTERESIS=0.4
-ROBOT_LINK_LOW_SAMPLES=5
+ROBOT_LINK_BATTERY_INTERVAL=1
+ROBOT_LINK_BATTERY_MAX_AGE=120
+ROBOT_LINK_PI_SHUTDOWN_DELAY=5
 ```
 
-The 9.6 V threshold is an initial 3S setting. Validate it against the actual
-pack, divider calibration, voltage sag, motor load, and independent hardware
-protection before relying on it.
+`batt_monitor` owns calibration, thresholds, confirmation, long-term trend,
+and the Bone shutdown grace period. Its watch service publishes a unique
+`shutdown_event`; Robot Link forwards each event to the Pi exactly once. Do not
+configure a second voltage threshold in Robot Link.
 
 Verify the Bone service and its battery source:
 
@@ -60,6 +61,12 @@ Verify the Bone service and its battery source:
 systemctl status robot-link-boned --no-pager
 sudo cat /run/batt_status.json
 sudo robot-linkctl status
+```
+
+The battery file should contain fields similar to:
+
+```json
+{"voltage":10.757,"status":"ok","shutdown_enabled":1,"critical_samples":0,"shutdown_requested":0,"shutdown_event":0}
 ```
 
 ## Install on the Raspberry Pi
