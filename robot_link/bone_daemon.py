@@ -7,8 +7,8 @@ LOG=logging.getLogger("robot-link-boned")
 
 class BoneDaemon:
     def __init__(self,args):
-        self.args=args; self.session=None; self.sequence=1; self.low_samples=0; self.shutdown_sent=False
-        self.last_battery_sample=None
+        self.args=args; self.session=None; self.sequence=1
+        self.last_battery_sample=None; self.last_shutdown_event=None
     def next_sequence(self):
         n=self.sequence; self.sequence=1 if n==0xffff else n+1; return n
     async def received(self,packet,session):
@@ -17,7 +17,7 @@ class BoneDaemon:
     async def connected(self,reader,writer):
         if self.session:
             LOG.warning("rejecting second Pi connection"); writer.close(); await writer.wait_closed(); return
-        session=Session(reader,writer,1,self.received); self.session=session; self.shutdown_sent=False
+        session=Session(reader,writer,1,self.received); self.session=session
         self.last_battery_sample=None
         LOG.info("Pi connected from %s",writer.get_extra_info("peername"))
         try: await session.run()
@@ -33,7 +33,7 @@ class BoneDaemon:
         if not path.is_file() or time.time()-path.stat().st_mtime>self.args.battery_max_age: return None
         data=json.loads(path.read_text())
         for key in ("voltage","voltage_v","v","batt_voltage"):
-            if key in data: return path.stat().st_mtime_ns,float(data[key])
+            if key in data: return path.stat().st_mtime_ns,float(data[key]),data
         return None
     def read_voltage(self):
         sample=self.read_battery_sample()
@@ -44,9 +44,8 @@ class BoneDaemon:
             try: sample=self.read_battery_sample()
             except Exception as exc: LOG.warning("battery status unreadable: %s",exc); voltage=None
             else: voltage=None if sample is None else sample[1]
-            if sample is None:
-                self.low_samples=0; continue
-            sample_id,voltage=sample
+            if sample is None: continue
+            sample_id,voltage,status=sample
             if sample_id==self.last_battery_sample: continue
             self.last_battery_sample=sample_id
             if self.session and self.session.ready:
@@ -58,14 +57,17 @@ class BoneDaemon:
                         Flags.EVENT))
                 except (ConnectionError, OSError):
                     LOG.debug("battery update dropped while Pi disconnected")
-            if voltage>self.args.shutdown_voltage+self.args.hysteresis:
-                self.low_samples=0; continue
-            if voltage<=self.args.shutdown_voltage: self.low_samples+=1
-            if self.low_samples>=self.args.low_samples and not self.shutdown_sent:
+            event=status.get("shutdown_event")
+            requested=status.get("shutdown_requested") in (True,1,"1")
+            if requested and event and event!=self.last_shutdown_event:
                 try:
-                    await self.send_json(MessageType.SHUTDOWN_REQUEST,{"reason":f"battery low: {voltage:.3f} V","delay":self.args.pi_shutdown_delay},True)
-                    self.shutdown_sent=True; LOG.error("Pi shutdown requested at %.3f V",voltage)
-                except ConnectionError: LOG.warning("battery low at %.3f V but Pi is not connected",voltage)
+                    await self.send_json(MessageType.SHUTDOWN_REQUEST,
+                        {"reason":f"battery monitor shutdown: {voltage:.3f} V",
+                         "delay":self.args.pi_shutdown_delay},True)
+                    self.last_shutdown_event=event
+                    LOG.error("forwarded battery shutdown event %s at %.3f V",event,voltage)
+                except ConnectionError:
+                    LOG.warning("battery shutdown event %s pending; Pi is not connected",event)
     async def local_client(self,reader,writer):
         try:
             while line:=await reader.readline():
@@ -99,9 +101,6 @@ def main():
     p.add_argument("--listen",default=os.getenv("ROBOT_LINK_LISTEN","0.0.0.0")); p.add_argument("--port",type=int,default=int(os.getenv("ROBOT_LINK_PORT","5555")))
     p.add_argument("--socket",default=os.getenv("ROBOT_LINK_BONE_SOCKET","/run/robot-link/bone.sock"))
     p.add_argument("--battery-file",default=os.getenv("ROBOT_LINK_BATTERY_FILE","/run/batt_status.json"))
-    p.add_argument("--shutdown-voltage",type=float,default=float(os.getenv("ROBOT_LINK_SHUTDOWN_VOLTAGE","9.6")))
-    p.add_argument("--hysteresis",type=float,default=float(os.getenv("ROBOT_LINK_BATTERY_HYSTERESIS","0.4")))
-    p.add_argument("--low-samples",type=int,default=int(os.getenv("ROBOT_LINK_LOW_SAMPLES","5")))
     p.add_argument("--battery-interval",type=float,default=float(os.getenv("ROBOT_LINK_BATTERY_INTERVAL","1")))
     p.add_argument("--battery-max-age",type=float,default=float(os.getenv("ROBOT_LINK_BATTERY_MAX_AGE","120")))
     p.add_argument("--pi-shutdown-delay",type=float,default=float(os.getenv("ROBOT_LINK_PI_SHUTDOWN_DELAY","5")))

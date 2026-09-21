@@ -16,7 +16,7 @@ The current implementation runs one TCP session over the USB gadget network:
 The working feature set currently includes:
 
 - automatic reconnect and heartbeat timeout detection
-- Bone-requested Pi shutdown when the robot battery remains below its limit
+- forwarding batt_monitor's confirmed shutdown event to the Pi
 - Bone-requested WAV playback and text-to-speech through the Pi I2S output
 - Bone battery voltage telemetry to the Pi
 - Pi runtime status at `/run/robot-link/status.json`
@@ -103,3 +103,7 @@ or motion safety. Balance control, motor limits, e-stop validation, watchdogs,
 and hardware undervoltage protection remain local to the Bone or independent
 hardware. The Pi may disappear or reboot without preventing the Bone from
 keeping the machine safe.
+
+`batt_monitor` exclusively owns voltage thresholds, trend qualification, and
+critical-sample confirmation. Robot Link forwards its explicit shutdown event;
+it does not make a second voltage decision.
