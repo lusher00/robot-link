@@ -21,6 +21,9 @@ The working feature set currently includes:
 - Bone battery voltage telemetry to the Pi
 - Pi runtime status at `/run/robot-link/status.json`
 - OLED integration for real link state, Bone voltage, and both Pi IP addresses
+- Pi drive commands: Pi services publish on `/run/robot-link/pi.sock`,
+  `robot-linkd` sends `DRIVE_COMMAND`, and `robot-link-boned` relays it to
+  balance_bot's IPC socket. balance_bot alone decides whether to apply it.
 
 The complete planned architecture, including Hailo, ROS 2, lidar, SLAM,
 odometry, configuration, and navigation boundaries, is in

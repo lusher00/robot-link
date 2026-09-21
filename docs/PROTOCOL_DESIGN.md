@@ -280,7 +280,7 @@ Transport delivery is not application acceptance. ACK means that the receiver va
 | 0x0008 | PONG                | Both directions. Echo token and timing data.                                                                                       |
 | 0x0100 | ROBOT_STATUS        | Bone to Pi event. Overall mode, enabled state, faults, uptime, and control state.                                                  |
 | 0x0101 | BALANCE_STATE       | Bone to Pi event. Balance controller state and summarized attitude.                                                                |
-| 0x0200 | DRIVE_COMMAND       | Pi to Bone request. High level velocity or heading request with expiry; never raw motor power by default.                          |
+| 0x0200 | DRIVE_COMMAND       | Pi to Bone. Normalised steer and drive request with expiry (`ttl_ms`); never raw motor power. Implemented as an unacknowledged EVENT at ~10 Hz: each command supersedes the last and expiry, not ACK, bounds its effect. |
 | 0x0201 | ESTOP               | Either direction request. Requests safe stop; Bone owns final safety action.                                                       |
 | 0x0202 | ESTOP_CLEAR_REQUEST | Pi to Bone request. Request only; Bone validates local conditions and policy.                                                      |
 | 0x0203 | MOTOR_STATUS        | Bone to Pi event. Motor controller state and faults.                                                                               |

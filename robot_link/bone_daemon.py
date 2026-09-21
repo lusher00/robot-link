@@ -1,17 +1,69 @@
 import argparse, asyncio, contextlib, json, logging, os, time
 from pathlib import Path
+from .drive import parse_drive
 from .protocol import Flags, MessageType, Packet
 from .session import Session
 
 LOG=logging.getLogger("robot-link-boned")
 
+class BalanceBotClient:
+    """Relays Pi drive commands to balance_bot's IPC socket.
+
+    balance_bot decides whether to use them (Pi-drive gate open, SBUS stick
+    centred) and expires each one after its ttl_ms, so this never has to be
+    reliable: a failed or slow write drops that command, the next one replaces
+    it, and reconnect attempts are rate limited. It must never stall the link.
+
+    balance_bot streams telemetry to every IPC client, so a reader task drains
+    and discards it; otherwise balance_bot would see us as a slow client.
+    """
+    def __init__(self,path,retry_s=1.0,write_timeout_s=.2):
+        self.path=path; self.retry_s=retry_s; self.write_timeout_s=write_timeout_s
+        self.writer=None; self.discard=None; self.next_try=0.0
+    @property
+    def connected(self):
+        return self.writer is not None and not self.writer.is_closing() and not (self.discard and self.discard.done())
+    async def _connect(self):
+        now=time.monotonic()
+        if now<self.next_try: return False
+        self.next_try=now+self.retry_s
+        try: reader,writer=await asyncio.wait_for(asyncio.open_unix_connection(self.path),.5)
+        except (OSError,asyncio.TimeoutError) as exc:
+            LOG.debug("balance_bot socket %s unavailable: %s",self.path,exc); return False
+        self.writer=writer; self.discard=asyncio.create_task(self._discard(reader))
+        LOG.info("connected to balance_bot at %s",self.path); return True
+    @staticmethod
+    async def _discard(reader):
+        with contextlib.suppress(OSError):
+            while await reader.read(65536): pass
+    async def send(self,obj):
+        if not self.connected:
+            await self.close()
+            if not await self._connect(): return False
+        try:
+            self.writer.write(json.dumps(obj,separators=(",",":")).encode()+b"\n")
+            await asyncio.wait_for(self.writer.drain(),self.write_timeout_s)
+            return True
+        except (OSError,asyncio.TimeoutError) as exc:
+            LOG.warning("balance_bot write failed: %s",exc or type(exc).__name__)
+            await self.close(); return False
+    async def close(self):
+        if self.discard:
+            self.discard.cancel(); await asyncio.gather(self.discard,return_exceptions=True)
+        if self.writer: self.writer.transport.abort()
+        self.writer=None; self.discard=None
+
 class BoneDaemon:
     def __init__(self,args):
         self.args=args; self.session=None; self.sequence=1
         self.last_battery_sample=None; self.last_shutdown_event=None
+        self.balance=BalanceBotClient(getattr(args,"balance_socket","/tmp/balance_bot.sock"))
+        self.last_drive=None; self.last_drive_at=None; self.drive_forwarded=0; self.drive_dropped=0
     def next_sequence(self):
         n=self.sequence; self.sequence=1 if n==0xffff else n+1; return n
     async def received(self,packet,session):
+        if packet.message_type==MessageType.DRIVE_COMMAND:
+            await self.drive_received(packet); return
         if packet.message_type in (MessageType.ACK,MessageType.NACK):
             LOG.info("Pi response seq=%d: %s",packet.sequence,packet.payload.decode(errors="replace"))
     async def connected(self,reader,writer):
@@ -23,6 +75,17 @@ class BoneDaemon:
         try: await session.run()
         except Exception as exc: LOG.warning("Pi session ended: %s",exc)
         finally: self.session=None
+    async def drive_received(self,packet):
+        try: cmd=parse_drive(json.loads(packet.payload))
+        except ValueError as exc: LOG.warning("bad DRIVE_COMMAND from Pi: %s",exc); return
+        self.last_drive=cmd; self.last_drive_at=time.monotonic()
+        if await self.balance.send(dict(type="drive",**cmd)): self.drive_forwarded+=1
+        else: self.drive_dropped+=1
+    def drive_status(self):
+        if self.last_drive is None: return None
+        return dict(self.last_drive,age_s=round(time.monotonic()-self.last_drive_at,3),
+                    forwarded=self.drive_forwarded,dropped=self.drive_dropped,
+                    balance_bot_connected=self.balance.connected)
     async def send_json(self,msg_type,data,priority=False):
         if not self.session or not self.session.ready: raise ConnectionError("Pi link is not ready")
         flags=Flags.ACK_REQUIRED|(Flags.HIGH_PRIORITY if priority else Flags(0))
@@ -85,7 +148,7 @@ class BoneDaemon:
                     elif op=="speak": seq=await self.send_json(MessageType.SPEAK,{"text":str(req["text"])})
                     elif op=="shutdown": seq=await self.send_json(MessageType.SHUTDOWN_REQUEST,{"reason":str(req.get("reason","manual")),"delay":float(req.get("delay",5))},True)
                     elif op=="status":
-                        writer.write(json.dumps({"ok":True,"connected":bool(self.session and self.session.ready),"voltage":self.read_voltage()}).encode()+b"\n"); await writer.drain(); continue
+                        writer.write(json.dumps({"ok":True,"connected":bool(self.session and self.session.ready),"voltage":self.read_voltage(),"drive":self.drive_status()}).encode()+b"\n"); await writer.drain(); continue
                     else: raise ValueError("unknown operation")
                     response={"ok":True,"sequence":seq}
                 except Exception as exc: response={"ok":False,"error":str(exc)}
@@ -115,12 +178,14 @@ class BoneDaemon:
             async with local,tcp: await asyncio.gather(local.serve_forever(),tcp.serve_forever())
         finally:
             battery.cancel(); await asyncio.gather(battery,return_exceptions=True)
+            await self.balance.close()
             with contextlib.suppress(FileNotFoundError): os.unlink(self.args.socket)
 
 def main():
     p=argparse.ArgumentParser(description="Robot Link BeagleBone service")
     p.add_argument("--listen",default=os.getenv("ROBOT_LINK_LISTEN","192.168.7.2")); p.add_argument("--port",type=int,default=int(os.getenv("ROBOT_LINK_PORT","5555")))
     p.add_argument("--socket",default=os.getenv("ROBOT_LINK_BONE_SOCKET","/run/robot-link/bone.sock"))
+    p.add_argument("--balance-socket",default=os.getenv("ROBOT_LINK_BALANCE_SOCKET","/tmp/balance_bot.sock"))
     p.add_argument("--battery-file",default=os.getenv("ROBOT_LINK_BATTERY_FILE","/run/batt_status.json"))
     p.add_argument("--battery-interval",type=float,default=float(os.getenv("ROBOT_LINK_BATTERY_INTERVAL","1")))
     p.add_argument("--battery-max-age",type=float,default=float(os.getenv("ROBOT_LINK_BATTERY_MAX_AGE","120")))

@@ -117,6 +117,38 @@ sudo rm -f /etc/systemd/system/robot-link-boned.service
 sudo systemctl daemon-reload
 ```
 
+## Pi drive commands
+
+Pi services such as hailo-tracker publish drive commands on the local socket
+`/run/robot-link/pi.sock`, one JSON line each:
+
+```json
+{"op":"drive","x":0.2,"y":0.3,"ttl_ms":300}
+```
+
+`x` steers (-1..1, positive turns right), `y` drives (-1..1, positive is
+forward), and `ttl_ms` (50..1000) is how long the Bone may apply the command.
+Publishers send about 10 per second and never get a reply. `robot-linkd` sends
+each as an unacknowledged `DRIVE_COMMAND`; `robot-link-boned` relays it to
+balance_bot as `{"type":"drive",...}` on `/tmp/balance_bot.sock`.
+
+balance_bot keeps balancing regardless, applies Pi commands only while its
+Pi-drive gate is open and the SBUS stick is centred, and treats an expired
+command as a centred stick. Stopping the Pi, the tracker, or the link stops the
+robot within `ttl_ms`.
+
+To restrict who may publish, set `ROBOT_LINK_LOCAL_GROUP` in
+`/etc/default/robot-link` to a group containing the publishing service's user.
+
+Check the path by hand, without the tracker:
+
+```bash
+# Pi: half-speed forward for two seconds, then print link status
+robot-linkctl drive 0 0.5 --for 2
+# Bone: the relayed command, its age, and whether balance_bot took it
+sudo robot-linkctl status
+```
+
 ## Install the Pi OLED display
 
 The OLED program lives in the separate `oled-utils` repository and reads
