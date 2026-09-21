@@ -48,3 +48,21 @@ class BoneDaemonTest(unittest.IsolatedAsyncioTestCase):
             task=asyncio.create_task(daemon.battery_loop())
             await asyncio.sleep(.03); task.cancel(); await asyncio.gather(task,return_exceptions=True)
             self.assertEqual(daemon.session.sent,[])
+    async def test_unreadable_file_does_not_stop_loop(self):
+        # A partially written status file on the very first read used to raise
+        # UnboundLocalError and kill the unawaited battery task for good.
+        with tempfile.TemporaryDirectory() as tmp:
+            battery=os.path.join(tmp,"battery.json")
+            with open(battery,"w") as f: f.write('{"voltage": 9.')
+            args=SimpleNamespace(battery_file=battery,battery_max_age=5,battery_interval=.01,
+                pi_shutdown_delay=5)
+            daemon=BoneDaemon(args); daemon.session=FakeSession()
+            task=asyncio.create_task(daemon.battery_loop())
+            await asyncio.sleep(.03)
+            self.assertFalse(task.done())
+            with open(battery,"w") as f: json.dump({"voltage":9.4,
+                "shutdown_requested":1,"shutdown_event":99},f)
+            await asyncio.sleep(.03)
+            task.cancel(); await asyncio.gather(task,return_exceptions=True)
+            self.assertTrue(any(p.message_type==MessageType.SHUTDOWN_REQUEST
+                                for p in daemon.session.sent))

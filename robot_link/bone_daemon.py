@@ -39,35 +39,43 @@ class BoneDaemon:
         sample=self.read_battery_sample()
         return None if sample is None else sample[1]
     async def battery_loop(self):
+        # This loop is the only path that forwards a battery shutdown to the Pi,
+        # and nothing awaits its task, so an escaped exception would stop it
+        # silently. Every iteration is contained and logged instead.
         while True:
             await asyncio.sleep(self.args.battery_interval)
-            try: sample=self.read_battery_sample()
-            except Exception as exc: LOG.warning("battery status unreadable: %s",exc); voltage=None
-            else: voltage=None if sample is None else sample[1]
-            if sample is None: continue
-            sample_id,voltage,status=sample
-            if sample_id==self.last_battery_sample: continue
-            self.last_battery_sample=sample_id
-            if self.session and self.session.ready:
-                try:
-                    await self.session.send(Packet(
-                        MessageType.BATTERY_STATUS,
-                        json.dumps({"voltage":voltage,"sample_ns":sample_id},
-                                   separators=(",",":")).encode(),
-                        Flags.EVENT))
-                except (ConnectionError, OSError):
-                    LOG.debug("battery update dropped while Pi disconnected")
-            event=status.get("shutdown_event")
-            requested=status.get("shutdown_requested") in (True,1,"1")
-            if requested and event and event!=self.last_shutdown_event:
-                try:
-                    await self.send_json(MessageType.SHUTDOWN_REQUEST,
-                        {"reason":f"battery monitor shutdown: {voltage:.3f} V",
-                         "delay":self.args.pi_shutdown_delay},True)
-                    self.last_shutdown_event=event
-                    LOG.error("forwarded battery shutdown event %s at %.3f V",event,voltage)
-                except ConnectionError:
-                    LOG.warning("battery shutdown event %s pending; Pi is not connected",event)
+            try: await self._battery_step()
+            except asyncio.CancelledError: raise
+            except Exception: LOG.exception("battery loop iteration failed")
+    async def _battery_step(self):
+        try: sample=self.read_battery_sample()
+        except Exception as exc:
+            # e.g. a partially written /run/batt_status.json; retry next tick
+            LOG.warning("battery status unreadable: %s",exc); return
+        if sample is None: return
+        sample_id,voltage,status=sample
+        if sample_id==self.last_battery_sample: return
+        self.last_battery_sample=sample_id
+        if self.session and self.session.ready:
+            try:
+                await self.session.send(Packet(
+                    MessageType.BATTERY_STATUS,
+                    json.dumps({"voltage":voltage,"sample_ns":sample_id},
+                               separators=(",",":")).encode(),
+                    Flags.EVENT))
+            except (ConnectionError, OSError):
+                LOG.debug("battery update dropped while Pi disconnected")
+        event=status.get("shutdown_event")
+        requested=status.get("shutdown_requested") in (True,1,"1")
+        if requested and event and event!=self.last_shutdown_event:
+            try:
+                await self.send_json(MessageType.SHUTDOWN_REQUEST,
+                    {"reason":f"battery monitor shutdown: {voltage:.3f} V",
+                     "delay":self.args.pi_shutdown_delay},True)
+                self.last_shutdown_event=event
+                LOG.error("forwarded battery shutdown event %s at %.3f V",event,voltage)
+            except OSError:  # ConnectionError, or a stalled send (TimeoutError)
+                LOG.warning("battery shutdown event %s pending; Pi is not connected",event)
     async def local_client(self,reader,writer):
         try:
             while line:=await reader.readline():
